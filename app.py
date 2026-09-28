@@ -190,23 +190,8 @@ def split_scenario_sections(text: str) -> dict:
     return sections
 
 
-def render_map(priority_key: str, region_counts: dict):
-    """
-    Строит схематическую карту-план ДФО через plotly.express.scatter —
-    самый базовый и универсальный тип графика в Plotly, без каких-либо
-    внешних зависимостей.
-
-    Почему не scatter_mapbox / scatter_map / scatter_geo: все три требуют
-    подгрузки внешних ресурсов в браузере (тайлы карты, атлас границ стран
-    с cdn.plot.ly) и/или зависят от версии JS-бандла Plotly, встроенного во
-    фронтенд Streamlit. Любой сбой сети или несовпадение версий там даёт
-    либо пустой график, либо (что хуже) полный крах рендера страницы —
-    именно это вызывало пустые вкладки. Обычный scatter не тянет из сети
-    ничего и работает одинаково в любой версии plotly/streamlit.
-
-    Ось X — долгота, ось Y — широта: расположение точек друг относительно
-    друга соответствует реальной географии, просто без подложки-карты снизу.
-    """
+def _build_map_dataframe(region_counts: dict) -> pd.DataFrame:
+    """Таблица для карты: регион, координаты, число чанков, размер точки."""
     rows = []
     for region, (lat, lon) in REGION_COORDS.items():
         rows.append({
@@ -216,11 +201,59 @@ def render_map(priority_key: str, region_counts: dict):
             "чанков": region_counts.get(region, 0),
         })
     df_map = pd.DataFrame(rows)
-
-    # Точки с нулевым числом чанков всё равно показываем (минимальный размер),
+    # Точки с нулём чанков всё равно показываем (минимальный размер),
     # чтобы было видно полное покрытие ДФО, а не только «где есть данные».
     df_map["размер_точки"] = df_map["чанков"].apply(lambda x: max(x, 1))
+    return df_map
 
+
+def render_map(priority_key: str, region_counts: dict):
+    """
+    Карта ДФО с географической подложкой (OpenStreetMap).
+    Размер точки = число чанков, цвет = выбранный приоритет.
+
+    Поддерживает и новый plotly (px.scatter_map, plotly >= 6), и старый
+    (px.scatter_mapbox). Стили open-street-map / carto-positron бесплатные
+    и токена Mapbox не требуют. Тайлы подложки браузер загружает из
+    интернета, поэтому при отсутствии сети точки будут без подложки —
+    для этого случая есть переключатель на схематичный вид.
+    """
+    df_map = _build_map_dataframe(region_counts)
+    color = PRIORITY_COLORS.get(priority_key, "#1f77b4")
+
+    common_kwargs = dict(
+        lat="lat",
+        lon="lon",
+        size="размер_точки",
+        size_max=28,
+        hover_name="регион",
+        hover_data={"lat": False, "lon": False, "размер_точки": False, "чанков": True},
+        color_discrete_sequence=[color],
+        zoom=2.6,
+        center={"lat": 57, "lon": 138},
+        height=560,
+    )
+
+    if hasattr(px, "scatter_map"):
+        # plotly >= 6: новый движок карт (MapLibre)
+        fig = px.scatter_map(df_map, **common_kwargs)
+        fig.update_layout(map_style="open-street-map")
+    else:
+        # plotly < 6: классический scatter_mapbox
+        fig = px.scatter_mapbox(df_map, **common_kwargs)
+        fig.update_layout(mapbox_style="open-street-map")
+
+    fig.update_traces(marker={"opacity": 0.8})
+    fig.update_layout(margin={"r": 0, "t": 10, "l": 0, "b": 0})
+    return fig
+
+
+def render_schematic_map(priority_key: str, region_counts: dict):
+    """
+    Запасной вариант без подложки: обычный scatter по долготе/широте.
+    Не требует загрузки тайлов из интернета, работает в любой сети.
+    """
+    df_map = _build_map_dataframe(region_counts)
     color = PRIORITY_COLORS.get(priority_key, "#1f77b4")
 
     fig = px.scatter(
@@ -241,8 +274,6 @@ def render_map(priority_key: str, region_counts: dict):
         yaxis_title="Широта",
         plot_bgcolor="#f7f7f7",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#e5e5e5")
-    fig.update_yaxes(showgrid=True, gridcolor="#e5e5e5")
     return fig
 
 
@@ -457,13 +488,29 @@ with tab_map:
     )
     map_priority_key = result_priority_key if result else priority_key
     map_counts = region_counts if result else get_region_counts(priority_key)
-    fig_map = render_map(map_priority_key, map_counts)
-    st.plotly_chart(fig_map, width="stretch")
-    st.caption(
-        "Схематическое расположение регионов ДФО по долготе и широте (без "
-        "географической подложки). Размер точки — количество релевантных "
-        "фрагментов базы по выбранному приоритету. Цвет соответствует приоритету."
+
+    map_view = st.radio(
+        "Вид карты",
+        options=["С географической подложкой", "Схематичный (без подложки)"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
+    if map_view == "С географической подложкой":
+        fig_map = render_map(map_priority_key, map_counts)
+        caption = (
+            "Подложка — OpenStreetMap (загружается из интернета). Размер точки — "
+            "количество релевантных фрагментов базы по выбранному приоритету, "
+            "цвет соответствует приоритету. Если подложка не появилась — "
+            "переключитесь на схематичный вид."
+        )
+    else:
+        fig_map = render_schematic_map(map_priority_key, map_counts)
+        caption = (
+            "Схематичное расположение регионов по долготе и широте. Размер точки — "
+            "количество релевантных фрагментов базы, цвет соответствует приоритету."
+        )
+    st.plotly_chart(fig_map, width="stretch")
+    st.caption(caption)
 
 # --- ВКЛАДКА «ИСТОЧНИКИ» -----------------------------------------------------
 with tab_sources:
