@@ -11,8 +11,7 @@ RAG-система для генерации сценариев развития
 1. Клонировать репозиторий: `git clone ...`
 2. Установить зависимости: `pip install -r requirements.txt`
 3. Скопировать `.env.example` в `.env` и вставить свой ключ GigaChat.
-4. Скачать сертификат Минцифры: `russian_trusted_root_ca_pem.crt`
-5. Загрузить данные в ChromaDB (один раз при первом запуске): `python chroma_loader.py`
+4. Загрузить данные в ChromaDB (один раз при первом запуске): `python chroma_loader.py`
 
 ## Запуск
 Дважды кликните по файлу `start_app.bat` в корне проекта.
